@@ -4,16 +4,9 @@ require_once 'db.php';
 
 $action = $_GET['action'] ?? '';
 
-// --- LÓGICA DE PRIVACIDADE GERAL ---
-// Usa placeholder (?) em vez de interpolar a variável diretamente no SQL.
+// --- LÓGICA DE PRIVACIDADE GERAL (helper centralizado; usa placeholder ?) ---
 // Quem usar esta condição deve passar $privacyParam na posição correspondente.
-$privacyCondition = " AND (
-    l.usuario_id = ? 
-    OR u.is_restricted = 0 
-    OR l.is_shared = 1
-    OR l.veiculo_id IS NOT NULL 
-    OR l.residencia_id IS NOT NULL
-)";
+$privacyCondition = privacy_condition_lancamentos('l', 'u');
 $privacyParam = [$LOGGED_IN_USER_ID];
 
 if ($action === 'get_transaction_splits') {

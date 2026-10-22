@@ -4,18 +4,10 @@ if ($CURRENT_USER['tipo_perfil'] !== 'GUARDIÃO' && !$IS_SUPER_ADMIN) {
     return;
 }
 
-// Decodifica configs atuais ou usa padrão
+// Decodifica configs atuais usando os defaults centralizados (fonte única).
 $appConfig = json_decode($CURRENT_USER['app_config'] ?? '{}', true);
-$modules = $appConfig['modules'] ?? [
-    'budget' => true, 
-    'goals' => true, 
-    'pets' => true, 
-    'gamification' => true, 
-    'reports' => true,
-    'subscriptions' => true,
-    'market' => true // Padrão ativo
-];
-$style = $appConfig['style'] ?? ['color' => 'indigo', 'icon' => 'fa-crown'];
+$modules = active_modules($CURRENT_USER['app_config'] ?? null);
+$style = (is_array($appConfig) && isset($appConfig['style'])) ? $appConfig['style'] : ['color' => 'indigo', 'icon' => 'fa-crown'];
 
 // Opções de ícones
 $icons = ['fa-crown', 'fa-shield-halved', 'fa-house-chimney', 'fa-heart', 'fa-star', 'fa-leaf', 'fa-bolt', 'fa-gem', 'fa-paw', 'fa-dragon'];

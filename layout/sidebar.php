@@ -5,12 +5,10 @@ if ($currentPage === 'onboarding') {
 }
 
 // --- LÓGICA DE CONFIGURAÇÃO DO APP ---
-// Decodifica JSON ou usa padrões (fallback seguro)
+// Usa helpers centralizados (fonte única de defaults de módulos).
 $appConfig = json_decode($CURRENT_USER['app_config'] ?? '{}', true);
-$activeModules = $appConfig['modules'] ?? [
-    'budget' => true, 'goals' => true, 'pets' => true, 'gamification' => true, 'reports' => true, 'subscriptions' => true, 'market' => true
-];
-$appStyle = $appConfig['style'] ?? ['color' => 'indigo', 'icon' => 'fa-crown'];
+$activeModules = active_modules($CURRENT_USER['app_config'] ?? null);
+$appStyle = (is_array($appConfig) && isset($appConfig['style'])) ? $appConfig['style'] : ['color' => 'indigo', 'icon' => 'fa-crown'];
 
 // --- MAPA DE CORES ---
 // Define classes CSS baseadas na escolha do usuário

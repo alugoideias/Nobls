@@ -1,13 +1,7 @@
 
 <?php
-// --- REGRAS DE PRIVACIDADE ---
-$privacyCondition = " AND (
-    l.usuario_id = $LOGGED_IN_USER_ID 
-    OR u.is_restricted = 0 
-    OR l.is_shared = 1
-    OR l.veiculo_id IS NOT NULL 
-    OR l.residencia_id IS NOT NULL
-)";
+// --- REGRAS DE PRIVACIDADE (helper centralizado; usa placeholder ?) ---
+$privacyCondition = privacy_condition_lancamentos('l', 'u');
 
 // --- NAVEGAÇÃO DE MÊS ---
 $mes = $_GET['month'] ?? date('n');
@@ -57,7 +51,7 @@ $stmtSpending = $pdo->prepare("
     $privacyCondition
     GROUP BY l.categoria_id
 ");
-$stmtSpending->execute([$LOGGED_IN_FAMILY_ID, $mes, $ano]);
+$stmtSpending->execute([$LOGGED_IN_FAMILY_ID, $mes, $ano, $LOGGED_IN_USER_ID]);
 $spending = $stmtSpending->fetchAll(PDO::FETCH_KEY_PAIR);
 
 // Totais

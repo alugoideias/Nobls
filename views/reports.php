@@ -1,14 +1,9 @@
 
 <?php
 // --- REGRAS DE PRIVACIDADE ---
-// Replica a lógica do Dashboard para que os relatórios sejam consistentes
-$privacyCondition = " AND (
-    l.usuario_id = $LOGGED_IN_USER_ID 
-    OR u.is_restricted = 0 
-    OR l.is_shared = 1
-    OR l.veiculo_id IS NOT NULL 
-    OR l.residencia_id IS NOT NULL
-)";
+// Usa o helper centralizado (placeholder ?) para manter a regra consistente
+// com o resto do sistema. O id do usuário é anexado em cada execute.
+$privacyCondition = privacy_condition_lancamentos('l', 'u');
 
 // --- COLETA DE DADOS PARA GRÁFICOS ---
 
@@ -24,12 +19,12 @@ for ($i = 5; $i >= 0; $i--) {
     
     // Receitas
     $stmt = $pdo->prepare("SELECT SUM(l.valor) FROM lancamentos l JOIN usuarios u ON l.usuario_id = u.id WHERE l.familia_id = ? AND l.tipo = 'RECEITA' AND MONTH(l.data_competencia) = ? AND YEAR(l.data_competencia) = ? AND l.deleted_at IS NULL $privacyCondition");
-    $stmt->execute([$LOGGED_IN_FAMILY_ID, $month, $year]);
+    $stmt->execute([$LOGGED_IN_FAMILY_ID, $month, $year, $LOGGED_IN_USER_ID]);
     $income = $stmt->fetchColumn() ?? 0;
 
     // Despesas
     $stmt = $pdo->prepare("SELECT SUM(l.valor) FROM lancamentos l JOIN usuarios u ON l.usuario_id = u.id WHERE l.familia_id = ? AND l.tipo = 'DESPESA' AND MONTH(l.data_competencia) = ? AND YEAR(l.data_competencia) = ? AND l.deleted_at IS NULL $privacyCondition");
-    $stmt->execute([$LOGGED_IN_FAMILY_ID, $month, $year]);
+    $stmt->execute([$LOGGED_IN_FAMILY_ID, $month, $year, $LOGGED_IN_USER_ID]);
     $expense = $stmt->fetchColumn() ?? 0;
 
     $cashflowData['labels'][] = $date->format('M/y');
@@ -50,7 +45,7 @@ $stmtCat = $pdo->prepare("
     GROUP BY c.id 
     ORDER BY total DESC
 ");
-$stmtCat->execute([$LOGGED_IN_FAMILY_ID, $currM, $currY]);
+$stmtCat->execute([$LOGGED_IN_FAMILY_ID, $currM, $currY, $LOGGED_IN_USER_ID]);
 $allCats = $stmtCat->fetchAll();
 
 $catColors = ['#6366f1', '#ec4899', '#f59e0b', '#10b981', '#ef4444', '#8b5cf6', '#64748b'];

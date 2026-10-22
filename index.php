@@ -49,84 +49,13 @@ function clean_money_input($val) {
     return (float)$val;
 }
 
-// --- SEEDER E MIGRAÇÕES ---
-if (isset($LOGGED_IN_FAMILY_ID) && $LOGGED_IN_FAMILY_ID > 0) {
-    $pdo->query("UPDATE categorias SET grupo = 'Serviços' WHERE grupo = 'Assinaturas' AND familia_id = $LOGGED_IN_FAMILY_ID");
-
-    // Migração: Orçamentos e Rateios
-    try {
-        $pdo->exec("ALTER TABLE orcamentos ADD COLUMN ativo BOOLEAN DEFAULT 1");
-        $pdo->exec("ALTER TABLE orcamentos ADD COLUMN escopo ENUM('FAMILIA', 'PESSOAL') DEFAULT 'FAMILIA'");
-    } catch (PDOException $e) {}
-
-    try {
-        $pdo->exec("ALTER TABLE lancamentos ADD COLUMN is_internal_transfer BOOLEAN DEFAULT 0");
-        $pdo->exec("ALTER TABLE lancamentos ADD COLUMN settlement_id VARCHAR(36) DEFAULT NULL");
-        $pdo->exec("ALTER TABLE lancamentos ADD COLUMN is_shared BOOLEAN DEFAULT FALSE");
-    } catch (PDOException $e) {}
-
-    // Migração: Configurações do App (Módulos e Aparência) - Redundância caso o db.php não tenha pego
-    try {
-        $pdo->exec("ALTER TABLE familias ADD COLUMN app_config JSON DEFAULT NULL");
-    } catch (PDOException $e) {}
-    
-    // Migração: Metadados para Lançamentos (Para Km/Litros de combustível)
-    try {
-        $pdo->exec("ALTER TABLE lancamentos ADD COLUMN meta_dados JSON DEFAULT NULL");
-    } catch (PDOException $e) {}
-
-    // Migração: saldo_inicial em contas (base para reconciliação de saldo).
-    // Para contas legadas, inicializa de forma que a reconciliação reproduza
-    // o saldo_atual vigente: saldo_inicial = saldo_atual - (receitas - despesas) pagas.
-    try {
-        $pdo->exec("ALTER TABLE contas_bancarias ADD COLUMN saldo_inicial DECIMAL(10,2) NOT NULL DEFAULT 0.00 AFTER tipo");
-        // Só roda o backfill quando a coluna acabou de ser criada (evita refazer a cada request).
-        $pdo->exec("
-            UPDATE contas_bancarias c
-            LEFT JOIN (
-                SELECT conta_id,
-                       SUM(CASE WHEN tipo = 'RECEITA' THEN valor ELSE -valor END) AS mov
-                FROM lancamentos
-                WHERE status = 'PAGO' AND conta_id IS NOT NULL AND deleted_at IS NULL
-                GROUP BY conta_id
-            ) m ON m.conta_id = c.id
-            SET c.saldo_inicial = c.saldo_atual - COALESCE(m.mov, 0)
-        ");
-    } catch (PDOException $e) {}
-
-    // NOVA TABELA DE RATEIO
-    $pdo->exec("CREATE TABLE IF NOT EXISTS `lancamento_rateios` (
-      `id` INT AUTO_INCREMENT PRIMARY KEY,
-      `lancamento_id` INT NOT NULL,
-      `usuario_id` INT NOT NULL,
-      `valor` DECIMAL(10, 2) NOT NULL,
-      `porcentagem` DECIMAL(5, 2) DEFAULT NULL,
-      FOREIGN KEY (`lancamento_id`) REFERENCES `lancamentos`(`id`) ON DELETE CASCADE,
-      FOREIGN KEY (`usuario_id`) REFERENCES `usuarios`(`id`) ON DELETE CASCADE
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;");
-    
-    // NOVAS TABELAS: MERCADO / DESPENSA
-    $pdo->exec("CREATE TABLE IF NOT EXISTS `mercado_produtos` (
-      `id` INT AUTO_INCREMENT PRIMARY KEY,
-      `familia_id` INT NOT NULL,
-      `nome` VARCHAR(255) NOT NULL,
-      `categoria` VARCHAR(100) DEFAULT 'Geral',
-      `intervalo_medio_dias` INT DEFAULT 0,
-      `ultima_compra` DATE DEFAULT NULL,
-      `proxima_compra_prevista` DATE DEFAULT NULL,
-      `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      `deleted_at` TIMESTAMP NULL DEFAULT NULL,
-      FOREIGN KEY (`familia_id`) REFERENCES `familias`(`id`) ON DELETE CASCADE
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;");
-
-    $pdo->exec("CREATE TABLE IF NOT EXISTS `mercado_historico` (
-      `id` INT AUTO_INCREMENT PRIMARY KEY,
-      `produto_id` INT NOT NULL,
-      `data_compra` DATE NOT NULL,
-      `quantidade` DECIMAL(10,2) DEFAULT 1,
-      `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (`produto_id`) REFERENCES `mercado_produtos`(`id`) ON DELETE CASCADE
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;");
+// --- SEED DE CATEGORIAS POR FAMÍLIA ---
+// As migrações de ESTRUTURA (ALTER/CREATE TABLE) foram movidas para migrate.php,
+// que roda sob demanda no deploy — não a cada requisição.
+// Aqui fica apenas o seed de categorias essenciais, necessário para famílias novas.
+// Protegido por flag de sessão para rodar no máximo uma vez por sessão.
+if (isset($LOGGED_IN_FAMILY_ID) && $LOGGED_IN_FAMILY_ID > 0 && empty($_SESSION['seed_done'])) {
+    $_SESSION['seed_done'] = true;
 
     // Garante Categorias Essenciais
     $catsServicos = ['Streaming', 'Programas', 'Saúde', 'Educação', 'Internet/TV'];
@@ -612,15 +541,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $targetDay = (int)$dia_recebimento; 
                 if ($targetDay == 101) $targetDay = 5; 
                 if ($targetDay == 102) $targetDay = 31;
-                
+
+                // Prepara a checagem de salário já existente no mês (de QUALQUER status),
+                // para não criar um PENDENTE duplicado quando já houver um salário PAGO
+                // naquele mês (o DELETE acima só remove PENDENTES futuros).
+                $stmtExists = $pdo->prepare("SELECT 1 FROM lancamentos WHERE usuario_id = ? AND descricao = 'Salário Mensal (Automático)' AND tipo = 'RECEITA' AND MONTH(data_competencia) = ? AND YEAR(data_competencia) = ? AND deleted_at IS NULL LIMIT 1");
+                $stmtIns = $pdo->prepare("INSERT INTO lancamentos (familia_id, usuario_id, criador_id, descricao, valor, tipo, data_competencia, status, categoria_id, conta_id, tipo_recorrencia, recorrencia_grupo_id, is_shared) VALUES (?, ?, ?, 'Salário Mensal (Automático)', ?, 'RECEITA', ?, 'PENDENTE', ?, ?, 'MENSAL', ?, ?)");
+
                 for ($i = 0; $i < 24; $i++) { 
                     $date = clone $baseDate; 
                     $date->modify("first day of +$i months"); 
                     if ($dia_recebimento == 102) { $date->modify("last day of this month"); } 
                     else { $daysInMonth = (int)$date->format('t'); $dayToSet = min($targetDay, $daysInMonth); $date->setDate((int)$date->format('Y'), (int)$date->format('m'), $dayToSet); } 
                     $data_competencia = $date->format('Y-m-d'); 
-                    
-                    $stmtIns = $pdo->prepare("INSERT INTO lancamentos (familia_id, usuario_id, criador_id, descricao, valor, tipo, data_competencia, status, categoria_id, conta_id, tipo_recorrencia, recorrencia_grupo_id, is_shared) VALUES (?, ?, ?, 'Salário Mensal (Automático)', ?, 'RECEITA', ?, 'PENDENTE', ?, ?, 'MENSAL', ?, ?)"); 
+
+                    // Pula o mês se já existe um salário automático (evita duplicar com um PAGO).
+                    $stmtExists->execute([$LOGGED_IN_USER_ID, (int)$date->format('n'), (int)$date->format('Y')]);
+                    if ($stmtExists->fetchColumn()) { continue; }
+
                     $stmtIns->execute([$LOGGED_IN_FAMILY_ID, $LOGGED_IN_USER_ID, $LOGGED_IN_USER_ID, $renda, $data_competencia, $categoriaSalarioId, $conta_recebimento, $recorrencia_grupo_id, ($is_restricted ? 0 : 1)]); 
                 }
             }
@@ -880,6 +818,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 if(isset($_GET['action']) && $_GET['action'] === 'complete_onboarding') { header('Location: index.php?page=dashboard'); exit; }
 $currentPage = $_GET['page'] ?? ($IS_SUPER_ADMIN ? 'superadmin' : 'dashboard');
+
+// --- GATING DE MÓDULO ---
+// Se a página corresponde a um módulo desativado nas configurações da família,
+// bloqueia o acesso direto por URL (antes o gating era só cosmético no menu).
+// Super admin não passa por isso (usa seu próprio conjunto de telas).
+if (!$IS_SUPER_ADMIN && !module_enabled($currentPage, $CURRENT_USER['app_config'] ?? null)) {
+    header('Location: index.php?page=dashboard&error=module_disabled&msg=' . urlencode('Este módulo está desativado nas configurações da dinastia.'));
+    exit;
+}
+
 if (isset($_SESSION['show_onboarding']) && $_SESSION['show_onboarding'] === true) { $currentPage = 'onboarding'; unset($_SESSION['show_onboarding']); }
 include 'layout/header.php';
 ?>

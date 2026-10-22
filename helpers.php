@@ -143,3 +143,86 @@ if (!function_exists('reconcile_account_balances')) {
         return $stmt->rowCount();
     }
 }
+
+if (!function_exists('default_modules')) {
+    /**
+     * Fonte única dos módulos disponíveis e seu estado padrão (todos ativos).
+     * Qualquer lugar que precise saber quais módulos existem deve usar isto.
+     * @return array<string,bool>
+     */
+    function default_modules() {
+        return [
+            'budget'        => true,
+            'goals'         => true,
+            'pets'          => true,
+            'gamification'  => true,
+            'reports'       => true,
+            'subscriptions' => true,
+            'market'        => true,
+        ];
+    }
+}
+
+if (!function_exists('active_modules')) {
+    /**
+     * Decodifica o app_config (JSON) da família e mescla com os defaults,
+     * garantindo que chaves novas introduzidas depois não quebrem configs antigas.
+     * @param string|null $appConfigJson Valor de familias.app_config.
+     * @return array<string,bool>
+     */
+    function active_modules($appConfigJson) {
+        $config = json_decode($appConfigJson ?? '{}', true);
+        $modules = (is_array($config) && isset($config['modules']) && is_array($config['modules']))
+            ? $config['modules']
+            : [];
+        // Defaults primeiro; config sobrescreve o que estiver definido.
+        return array_merge(default_modules(), $modules);
+    }
+}
+
+if (!function_exists('module_enabled')) {
+    /**
+     * Indica se um módulo está ativo para a família.
+     * Módulos essenciais (não controláveis) são sempre ativos.
+     * @param string      $key           Chave do módulo (ex.: 'goals').
+     * @param string|null $appConfigJson Valor de familias.app_config.
+     * @return bool
+     */
+    function module_enabled($key, $appConfigJson) {
+        // Páginas essenciais nunca são bloqueadas por configuração de módulo.
+        $essential = ['dashboard', 'transactions', 'assets', 'import', 'family', 'settings', 'profile', 'onboarding', 'superadmin', 'placeholder'];
+        if (in_array($key, $essential, true)) {
+            return true;
+        }
+        $modules = active_modules($appConfigJson);
+        // Se a chave não é um módulo conhecido, não bloqueia (fail-open para páginas novas).
+        if (!array_key_exists($key, $modules)) {
+            return true;
+        }
+        return (bool)$modules[$key];
+    }
+}
+
+if (!function_exists('privacy_condition_lancamentos')) {
+    /**
+     * Cláusula SQL de privacidade para consultas sobre `lancamentos` (alias l) com
+     * join em `usuarios` (alias u). Usa placeholder (?) — o caller DEVE anexar o
+     * id do usuário logado na posição correspondente dos parâmetros.
+     *
+     * Regra: o usuário vê o lançamento se for dele, se o dono não é restrito,
+     * se é compartilhado, ou se está vinculado a um ativo (veículo/residência).
+     *
+     * @param string $l Alias da tabela lancamentos.
+     * @param string $u Alias da tabela usuarios.
+     * @return string
+     */
+    function privacy_condition_lancamentos($l = 'l', $u = 'u') {
+        return " AND (
+            {$l}.usuario_id = ?
+            OR {$u}.is_restricted = 0
+            OR {$l}.is_shared = 1
+            OR {$l}.veiculo_id IS NOT NULL
+            OR {$l}.residencia_id IS NOT NULL
+        )";
+    }
+}
