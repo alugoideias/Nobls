@@ -1,0 +1,15 @@
+# Impede a execução de qualquer script no diretório de uploads.
+# Mesmo que um arquivo malicioso (.php, .phtml, etc.) seja enviado, ele não será executado.
+
+# Desabilita handlers de script
+<FilesMatch "\.(php|php3|php4|php5|php7|phtml|pht|phar|cgi|pl|py|asp|aspx|sh)$">
+    Require all denied
+</FilesMatch>
+
+# Garante que nada seja interpretado como PHP
+php_flag engine off
+RemoveHandler .php .phtml .php3 .php4 .php5 .php7
+RemoveType .php .phtml .php3 .php4 .php5 .php7
+AddType text/plain .php .phtml .php3 .php4 .php5 .php7
+
+Options -ExecCGI -Indexes

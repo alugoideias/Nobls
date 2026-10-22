@@ -8,26 +8,46 @@ $error = '';
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $email = $_POST['email'] ?? '';
 
+    // Mensagem genérica padrão: nunca revela se o e-mail existe nem expõe o link.
+    $message = "Se um usuário com este e-mail existir, um link de redefinição foi enviado para a caixa de entrada.";
+
     if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
         $error = 'Por favor, insira um e-mail válido.';
+        $message = '';
     } else {
-        $stmt = $pdo->prepare("SELECT id FROM usuarios WHERE email = ? AND deleted_at IS NULL");
-        $stmt->execute([$email]);
-        $user = $stmt->fetch();
+        // --- RATE LIMITING: no máximo 3 solicitações por e-mail na última hora ---
+        $stmtCount = $pdo->prepare("SELECT COUNT(*) FROM password_resets WHERE email = ? AND created_at >= NOW() - INTERVAL 1 HOUR");
+        $stmtCount->execute([$email]);
+        $recentRequests = (int)$stmtCount->fetchColumn();
 
-        if ($user) {
-            $token = bin2hex(random_bytes(50));
-            $stmt = $pdo->prepare("INSERT INTO password_resets (email, token) VALUES (?, ?)");
-            $stmt->execute([$email, $token]);
-
-            // --- SIMULAÇÃO DE ENVIO DE E-MAIL ---
-            // Em uma aplicação real, você enviaria um e-mail com o link abaixo.
-            $resetLink = "http://" . $_SERVER['HTTP_HOST'] . dirname($_SERVER['PHP_SELF']) . "/reset_password.php?token=" . $token;
-            $message = "Se um usuário com este e-mail existir, um link de redefinição foi enviado. <br><br><strong>Link (Simulação):</strong> <a href='{$resetLink}' class='text-indigo-500 hover:underline break-all'>{$resetLink}</a>";
-            // --- FIM DA SIMULAÇÃO ---
+        if ($recentRequests >= 3) {
+            // Mantém a mensagem genérica para não revelar informação, apenas evita gerar mais tokens.
+            error_log("Rate limit de reset de senha atingido para: $email");
         } else {
-            // Mensagem genérica para não confirmar se um e-mail existe ou não.
-            $message = "Se um usuário com este e-mail existir, um link de redefinição foi enviado.";
+            $stmt = $pdo->prepare("SELECT id FROM usuarios WHERE email = ? AND deleted_at IS NULL");
+            $stmt->execute([$email]);
+            $user = $stmt->fetch();
+
+            if ($user) {
+                $token = bin2hex(random_bytes(50));
+                $stmt = $pdo->prepare("INSERT INTO password_resets (email, token, used) VALUES (?, ?, 0)");
+                $stmt->execute([$email, $token]);
+
+                $resetLink = "https://" . $_SERVER['HTTP_HOST'] . dirname($_SERVER['PHP_SELF']) . "/reset_password.php?token=" . $token;
+
+                // --- ENVIO DE E-MAIL ---
+                // O link JAMAIS deve ser exibido na tela. Enviado exclusivamente por e-mail.
+                $subject = "Redefinição de senha - Nobl$";
+                $body = "Olá,\n\nRecebemos uma solicitação para redefinir a senha da sua conta Nobl\$.\n"
+                      . "Para criar uma nova senha, acesse o link abaixo (válido por 1 hora):\n\n"
+                      . $resetLink . "\n\n"
+                      . "Se você não solicitou esta redefinição, ignore este e-mail.\n";
+                $headers = "From: no-reply@" . ($_SERVER['HTTP_HOST'] ?? 'nobl.app') . "\r\n";
+
+                // Em produção, substitua por um serviço de e-mail transacional (SMTP/API).
+                @mail($email, $subject, $body, $headers);
+            }
+            // Em ambos os casos (usuário existindo ou não), a resposta é a mesma mensagem genérica.
         }
     }
 }

@@ -16,8 +16,9 @@ if (!$apiKey || $apiKey === 'SUA_API_KEY_AQUI') {
 $reportType = $_GET['report'] ?? 'general';
 
 // --- PRIVACIDADE: Define o que a Ise pode "ver" ---
+// Usa placeholder (?) em vez de interpolar a variável diretamente no SQL.
 $privacyCondition = " AND (
-    l.usuario_id = $LOGGED_IN_USER_ID 
+    l.usuario_id = ? 
     OR u.is_restricted = 0 
     OR l.is_shared = 1
     OR l.veiculo_id IS NOT NULL 
@@ -35,7 +36,7 @@ $stmtSummary = $pdo->prepare("
     JOIN usuarios u ON l.usuario_id = u.id
     WHERE l.familia_id = ? AND MONTH(l.data_competencia) = ? AND YEAR(l.data_competencia) = ? AND l.deleted_at IS NULL $privacyCondition
 ");
-$stmtSummary->execute([$LOGGED_IN_FAMILY_ID, $currentMonth, $currentYear]);
+$stmtSummary->execute([$LOGGED_IN_FAMILY_ID, $currentMonth, $currentYear, $LOGGED_IN_USER_ID]);
 $summary = $stmtSummary->fetch();
 
 // B. Análise de Orçamento
@@ -49,12 +50,12 @@ $stmtBudget = $pdo->prepare("
     GROUP BY c.id
     HAVING valor_gasto > (valor_orcado * 0.9)
 ");
-$stmtBudget->execute([$LOGGED_IN_FAMILY_ID, $currentMonth, $currentYear]);
+$stmtBudget->execute([$LOGGED_IN_USER_ID, $LOGGED_IN_FAMILY_ID, $currentMonth, $currentYear]);
 $budgetAlerts = $stmtBudget->fetchAll();
 
 // C. Top 5 Gastos do Mês
 $stmtTop = $pdo->prepare("SELECT descricao, valor, data_competencia FROM lancamentos l JOIN usuarios u ON l.usuario_id = u.id WHERE l.familia_id = ? AND tipo = 'DESPESA' AND MONTH(data_competencia) = ? AND YEAR(data_competencia) = ? AND l.deleted_at IS NULL $privacyCondition ORDER BY valor DESC LIMIT 5");
-$stmtTop->execute([$LOGGED_IN_FAMILY_ID, $currentMonth, $currentYear]);
+$stmtTop->execute([$LOGGED_IN_FAMILY_ID, $currentMonth, $currentYear, $LOGGED_IN_USER_ID]);
 $topExpenses = $stmtTop->fetchAll();
 
 // D. Status das Metas
@@ -63,13 +64,13 @@ $stmtGoals->execute([$LOGGED_IN_FAMILY_ID]);
 $goals = $stmtGoals->fetchAll();
 
 // E. Resumo Patrimonial (Contas Bancárias também têm dono)
-$accPrivacy = " AND (c.usuario_id = $LOGGED_IN_USER_ID OR u.is_restricted = 0) ";
+$accPrivacy = " AND (c.usuario_id = ? OR u.is_restricted = 0) ";
 $stmtAssets = $pdo->prepare("SELECT 
     (SELECT SUM(c.saldo_atual) FROM contas_bancarias c JOIN usuarios u ON c.usuario_id = u.id WHERE c.familia_id = ? AND c.deleted_at IS NULL $accPrivacy) as bancos,
     (SELECT SUM(valor_estimado) FROM ativos_veiculos WHERE familia_id = ? AND deleted_at IS NULL) as veiculos,
     (SELECT SUM(valor_estimado) FROM ativos_residencias WHERE familia_id = ? AND deleted_at IS NULL) as imoveis
 ");
-$stmtAssets->execute([$LOGGED_IN_FAMILY_ID, $LOGGED_IN_FAMILY_ID, $LOGGED_IN_FAMILY_ID]);
+$stmtAssets->execute([$LOGGED_IN_FAMILY_ID, $LOGGED_IN_USER_ID, $LOGGED_IN_FAMILY_ID, $LOGGED_IN_FAMILY_ID]);
 $assets = $stmtAssets->fetch();
 
 
@@ -126,7 +127,10 @@ $ch = curl_init($url);
 curl_setopt($ch, CURLOPT_HTTPHEADER, array('Content-Type: application/json'));
 curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($requestPayload));
 curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
+curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
+curl_setopt($ch, CURLOPT_TIMEOUT, 60);
+curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
 $response = curl_exec($ch);
 $curlError = curl_error($ch);
 $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);

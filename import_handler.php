@@ -113,9 +113,11 @@ curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
 curl_setopt($ch, CURLOPT_POST, true);
 curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
 curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($payload));
-// IMPORTANTE: Desabilitar verificação SSL para evitar erros em localhost ou servidores sem certificados atualizados
-curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false); 
-curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
+// Verificação SSL habilitada: protege dados financeiros e a API key contra man-in-the-middle.
+curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
+curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
+curl_setopt($ch, CURLOPT_TIMEOUT, 120);
+curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
 
 $response = curl_exec($ch);
 $curlError = curl_error($ch);

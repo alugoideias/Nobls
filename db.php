@@ -36,7 +36,7 @@ if (!isset($_SESSION['user_id'])) {
 // --- VARIÁVEIS GLOBAIS DA APLICAÇÃO ---
 $LOGGED_IN_USER_ID = $_SESSION['user_id'];
 $LOGGED_IN_FAMILY_ID = $_SESSION['familia_id'];
-$IS_SUPER_ADMIN = isset($_SESSION['is_super_admin']) && $_SESSION['is_super_admin'];
+$IS_SUPER_ADMIN = is_super_admin();
 
 // Busca os dados completos do usuário logado E AS CONFIGURAÇÕES DA FAMÍLIA (app_config)
 // Implementa Self-Healing: Se a coluna não existir, cria e tenta de novo.

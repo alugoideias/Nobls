@@ -1,0 +1,26 @@
+# === Nobl$ - Regras de segurança do Apache ===
+
+# Não listar o conteúdo de diretórios
+Options -Indexes
+
+# Bloqueia acesso direto a arquivos sensíveis (config, schema, env, includes)
+<FilesMatch "(^\.env|\.env\..*|^db\.php$|^db_auth\.php$|^env\.php$|^helpers\.php$|\.sql$|\.md$|composer\.(json|lock)|package(-lock)?\.json|tsconfig\.json|vite\.config\.ts)$">
+    Require all denied
+</FilesMatch>
+
+# Protege arquivos ocultos (dotfiles), exceto .well-known
+<FilesMatch "^\.(?!well-known)">
+    Require all denied
+</FilesMatch>
+
+# Força HTTPS (descomente em produção com certificado válido)
+# RewriteEngine On
+# RewriteCond %{HTTPS} off
+# RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
+
+# Cabeçalhos de segurança básicos
+<IfModule mod_headers.c>
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set X-Frame-Options "SAMEORIGIN"
+    Header always set Referrer-Policy "strict-origin-when-cross-origin"
+</IfModule>

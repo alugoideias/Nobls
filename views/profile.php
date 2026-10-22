@@ -10,7 +10,7 @@ $stmtAcc->execute([$LOGGED_IN_FAMILY_ID]);
 $accounts = $stmtAcc->fetchAll();
 ?>
 <div class="space-y-6 max-w-2xl mx-auto animate-fade-in">
-    <?php if($success_msg): ?><div class="bg-emerald-100 text-emerald-800 p-3 rounded-lg text-sm flex items-center gap-2"><i class="fa-solid fa-check-circle"></i> Perfil atualizado e projeção de salário gerada para 2 anos!</div><?php endif; ?>
+    <?php if($success_msg): ?><div class="bg-emerald-100 text-emerald-800 p-3 rounded-lg text-sm flex items-center gap-2"><i class="fa-solid fa-check-circle"></i> Perfil atualizado com sucesso!</div><?php endif; ?>
     <?php if($success_pass_msg): ?><div class="bg-emerald-100 text-emerald-800 p-3 rounded-lg text-sm flex items-center gap-2"><i class="fa-solid fa-check-circle"></i> Senha alterada com sucesso!</div><?php endif; ?>
     <?php if($error_pass_msg): ?><div class="bg-red-100 text-red-800 p-3 rounded-lg text-sm flex items-center gap-2"><i class="fa-solid fa-circle-exclamation"></i> Erro ao alterar a senha. Verifique sua senha atual.</div><?php endif; ?>
     

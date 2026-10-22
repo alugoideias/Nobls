@@ -8,8 +8,8 @@ $token = $_GET['token'] ?? '';
 $validToken = false;
 
 if ($token) {
-    // Verifica se o token é válido e não expirou (ex: 1 hora)
-    $stmt = $pdo->prepare("SELECT * FROM password_resets WHERE token = ? AND created_at >= NOW() - INTERVAL 1 HOUR");
+    // Verifica se o token é válido, não expirou (1 hora) e ainda não foi usado.
+    $stmt = $pdo->prepare("SELECT * FROM password_resets WHERE token = ? AND used = 0 AND created_at >= NOW() - INTERVAL 1 HOUR");
     $stmt->execute([$token]);
     $resetRequest = $stmt->fetch();
     if ($resetRequest) {
@@ -22,6 +22,7 @@ if ($token) {
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && $validToken) {
+    verify_csrf();
     $senha = $_POST['senha'];
     $senha_confirm = $_POST['senha_confirm'];
 
@@ -33,17 +34,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $validToken) {
         $email = $resetRequest['email'];
         $senha_hash = password_hash($senha, PASSWORD_DEFAULT);
 
-        // Atualiza a senha do usuário
-        $stmt = $pdo->prepare("UPDATE usuarios SET senha_hash = ? WHERE email = ?");
-        $stmt->execute([$senha_hash, $email]);
+        $pdo->beginTransaction();
+        try {
+            // Atualiza a senha do usuário
+            $stmt = $pdo->prepare("UPDATE usuarios SET senha_hash = ? WHERE email = ?");
+            $stmt->execute([$senha_hash, $email]);
 
-        // Deleta o token para que não possa ser reutilizado
-        $stmt = $pdo->prepare("DELETE FROM password_resets WHERE email = ?");
-        $stmt->execute([$email]);
+            // Invalida TODOS os tokens do e-mail (marca como usados) para evitar reutilização
+            $stmt = $pdo->prepare("UPDATE password_resets SET used = 1 WHERE email = ?");
+            $stmt->execute([$email]);
 
-        // Redireciona para o login com mensagem de sucesso
-        header('Location: login.php?success=reset');
-        exit;
+            $pdo->commit();
+        } catch (Exception $e) {
+            $pdo->rollBack();
+            $error = "Não foi possível redefinir a senha. Tente novamente.";
+        }
+
+        if (!$error) {
+            // Redireciona para o login com mensagem de sucesso
+            header('Location: login.php?success=reset');
+            exit;
+        }
     }
 }
 
@@ -66,6 +77,7 @@ include 'layout/header.php';
 
             <?php if ($validToken): ?>
             <form method="POST" action="reset_password.php?token=<?php echo htmlspecialchars($token); ?>" class="space-y-4">
+                <?php echo csrf_field(); ?>
                 <div>
                     <label for="senha" class="text-xs font-bold text-slate-600">Nova Senha</label>
                     <input type="password" name="senha" id="senha" class="w-full p-3 mt-1 border border-slate-300 rounded-lg" required>

@@ -14,13 +14,14 @@ if(isset($_GET['success']) && $_GET['success'] === 'reset') {
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    verify_csrf();
     $email = $_POST['email'] ?? '';
     $senha = $_POST['senha'] ?? '';
 
     if (empty($email) || empty($senha)) {
         $error = 'Por favor, preencha e-mail e senha.';
     } else {
-        $stmt = $pdo->prepare("SELECT id, familia_id, nome, tipo_perfil, senha_hash FROM usuarios WHERE email = ? AND deleted_at IS NULL");
+        $stmt = $pdo->prepare("SELECT id, familia_id, nome, tipo_perfil, senha_hash, email FROM usuarios WHERE email = ? AND deleted_at IS NULL");
         $stmt->execute([$email]);
         $user = $stmt->fetch();
 
@@ -33,8 +34,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $_SESSION['user_nome'] = $user['nome'];
             $_SESSION['user_perfil'] = $user['tipo_perfil'];
             
-            // Lógica para Super Admin (usuário sem família ou com ID especial)
-            if ($user['familia_id'] == 0 || $user['email'] === 'admin@nobl.app') {
+            // Elegibilidade a Super Admin é decidida UMA ÚNICA VEZ aqui, no login,
+            // e persistida na sessão. Os demais arquivos usam essas flags em vez de
+            // comparar o e-mail repetidamente (evita privilégio por string hardcoded).
+            $isAdminAccount = ($user['familia_id'] == 0 || $user['email'] === 'admin@nobl.app');
+            $_SESSION['is_admin_account'] = $isAdminAccount;
+            if ($isAdminAccount) {
                  $_SESSION['is_super_admin'] = true;
             }
 
@@ -80,7 +85,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                 }
             } catch (Exception $e) {
-                // Silencia erro no login para não impedir acesso, mas loga se necessário
+                // Não impede o login, mas registra o erro para diagnóstico.
+                error_log('Robô de salário falhou para o usuário ' . $user['id'] . ': ' . $e->getMessage());
             }
 
             $redirectUrl = 'index.php';
@@ -126,6 +132,7 @@ include 'layout/header.php';
             <?php endif; ?>
 
             <form method="POST" action="login.php" class="space-y-4">
+                <?php echo csrf_field(); ?>
                 <div>
                     <label for="email" class="text-xs font-bold text-slate-600">E-mail</label>
                     <input type="email" name="email" id="email" class="w-full p-3 mt-1 border border-slate-300 rounded-lg" required>
@@ -140,12 +147,6 @@ include 'layout/header.php';
                 <button type="submit" class="w-full py-4 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 transition-all active:scale-95">
                     ENTRAR
                 </button>
-                
-                <div class="pt-2 text-center">
-                    <button type="button" onclick="document.getElementById('email').value='admin@nobl.app';document.getElementById('senha').value='password'" class="text-xs font-bold text-slate-400 hover:text-indigo-600 transition-colors">
-                        <i class="fa-solid fa-user-shield"></i> Demo: Admin
-                    </button>
-                </div>
             </form>
         </div>
         <div class="text-center mt-6">

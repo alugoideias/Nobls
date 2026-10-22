@@ -2,8 +2,9 @@
 require_once 'db.php';
 
 // --- LÓGICA DE TOGGLE ADMIN (MODO GOD) ---
+// Só contas elegíveis (marcadas no login) podem alternar o modo super admin.
 if (isset($_GET['toggle_admin'])) {
-    if (isset($CURRENT_USER) && $CURRENT_USER['email'] === 'admin@nobl.app') {
+    if (!empty($_SESSION['is_admin_account'])) {
          $_SESSION['is_super_admin'] = !($_SESSION['is_super_admin'] ?? false);
     }
     header('Location: index.php');
@@ -118,6 +119,7 @@ if (isset($LOGGED_IN_FAMILY_ID) && $LOGGED_IN_FAMILY_ID > 0) {
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    verify_csrf(); // Protege TODAS as ações POST contra CSRF
     $action = $_POST['action'] ?? '';
     $redirect_page = $_POST['redirect_to'] ?? ''; 
 
@@ -480,7 +482,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($action === 'update_profile') {
         // ... (código existente mantido)
         $foto_perfil_path = $CURRENT_USER['foto_perfil'];
-        if (isset($_FILES['foto_perfil']) && $_FILES['foto_perfil']['error'] == 0) { $target_dir = "uploads/profiles/"; if (!is_dir($target_dir)) { mkdir($target_dir, 0755, true); } $filename = $LOGGED_IN_USER_ID . '_' . basename($_FILES["foto_perfil"]["name"]); $target_file = $target_dir . $filename; if (move_uploaded_file($_FILES["foto_perfil"]["tmp_name"], $target_file)) { $foto_perfil_path = $target_file; } }
+        if (isset($_FILES['foto_perfil']) && $_FILES['foto_perfil']['error'] == 0) {
+            $target_dir = "uploads/profiles/";
+            if (!is_dir($target_dir)) { mkdir($target_dir, 0755, true); }
+
+            // Valida o tipo real do arquivo (não confia na extensão nem no mime do cliente)
+            $allowed = ['image/jpeg' => 'jpg', 'image/png' => 'png', 'image/gif' => 'gif', 'image/webp' => 'webp'];
+            $realMime = mime_content_type($_FILES['foto_perfil']['tmp_name']);
+            $maxSize = 5 * 1024 * 1024; // 5 MB
+
+            if (isset($allowed[$realMime]) && $_FILES['foto_perfil']['size'] <= $maxSize) {
+                // Nome aleatório: impede sobrescrita e path/extension controlado pelo usuário
+                $ext = $allowed[$realMime];
+                $filename = $LOGGED_IN_USER_ID . '_' . bin2hex(random_bytes(8)) . '.' . $ext;
+                $target_file = $target_dir . $filename;
+                if (move_uploaded_file($_FILES["foto_perfil"]["tmp_name"], $target_file)) {
+                    $foto_perfil_path = $target_file;
+                }
+            }
+            // Se não passar na validação, mantém a foto anterior silenciosamente.
+        }
         
         $is_restricted = isset($_POST['is_restricted']) ? 1 : 0; 
         $renda = clean_money_input($_POST['renda_estimada']); 
@@ -622,6 +643,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
     if ($action === 'delete_pet') { $stmt = $pdo->prepare("UPDATE pets SET deleted_at = NOW() WHERE id = ? AND familia_id = ?"); $stmt->execute([$_POST['pet_id'], $LOGGED_IN_FAMILY_ID]); header('Location: index.php?page=pets&success=1'); exit; }
     if ($action === 'add_vaccine') {
+        // IDOR: confirma que o pet pertence à família antes de registrar vacina/lançamento
+        $stmtPet = $pdo->prepare("SELECT id FROM pets WHERE id = ? AND familia_id = ? AND deleted_at IS NULL");
+        $stmtPet->execute([$_POST['pet_id'] ?? 0, $LOGGED_IN_FAMILY_ID]);
+        if (!$stmtPet->fetchColumn()) {
+            header('Location: index.php?page=pets&error=permission_denied'); exit;
+        }
         $pdo->beginTransaction();
         try {
             $financial_recurrence = $_POST['recorrencia_financeira'] ?? 'UNICA'; $qtd_parcelas = $_POST['qtd_parcelas'] ?? 1; $custo = clean_money_input($_POST['custo'] ?? 0); $first_lancamento_id = null;
@@ -652,8 +679,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $pdo->commit(); header('Location: index.php?page=pets&success=1'); exit;
         } catch (Exception $e) { $pdo->rollBack(); header('Location: index.php?page=pets&error=1'); exit; }
     }
-    if ($action === 'delete_vaccine') { $stmt = $pdo->prepare("UPDATE pet_vacinacoes SET deleted_at = NOW() WHERE id = ?"); $stmt->execute([$_POST['vaccine_id']]); header('Location: index.php?page=pets&success=1'); exit; }
-    if ($action === 'change_password') { if (password_verify($_POST['senha_atual'], $CURRENT_USER['senha_hash'])) { if ($_POST['nova_senha'] === $_POST['confirmar_nova_senha']) { $hash = password_hash($_POST['nova_senha'], PASSWORD_DEFAULT); $stmt = $pdo->prepare("UPDATE usuarios SET senha_hash = ? WHERE id = ?"); $stmt->execute([$hash, $LOGGED_IN_USER_ID]); header('Location: index.php?page=profile&success_pass=1'); exit; } } header('Location: index.php?page=profile&error_pass=1'); exit; }
+    if ($action === 'delete_vaccine') {
+        // IDOR: só exclui vacina vinculada a um pet da própria família
+        $stmt = $pdo->prepare("UPDATE pet_vacinacoes pv JOIN pets p ON pv.pet_id = p.id SET pv.deleted_at = NOW() WHERE pv.id = ? AND p.familia_id = ?");
+        $stmt->execute([$_POST['vaccine_id'], $LOGGED_IN_FAMILY_ID]);
+        header('Location: index.php?page=pets&success=1'); exit;
+    }
+    if ($action === 'change_password') {
+        $nova = $_POST['nova_senha'] ?? '';
+        $confirma = $_POST['confirmar_nova_senha'] ?? '';
+        // Valida senha atual, coincidência e força mínima (8 caracteres, igual ao registro/reset)
+        if (password_verify($_POST['senha_atual'] ?? '', $CURRENT_USER['senha_hash'])
+            && $nova === $confirma
+            && strlen($nova) >= 8) {
+            $hash = password_hash($nova, PASSWORD_DEFAULT);
+            $stmt = $pdo->prepare("UPDATE usuarios SET senha_hash = ? WHERE id = ?");
+            $stmt->execute([$hash, $LOGGED_IN_USER_ID]);
+            header('Location: index.php?page=profile&success_pass=1'); exit;
+        }
+        header('Location: index.php?page=profile&error_pass=1'); exit;
+    }
     if ($action === 'save_budget') {
         $orcamentos = $_POST['orcamento'] ?? []; $ativos = $_POST['ativo'] ?? []; $escopos = $_POST['escopo'] ?? []; $mes = date('n'); $ano = date('Y');
         $pdo->beginTransaction();
@@ -666,14 +711,73 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         $pdo->commit(); header('Location: index.php?page=budget&success=1'); exit;
     }
-    if ($action === 'add_comment') { $stmt = $pdo->prepare("INSERT INTO lancamento_comentarios (lancamento_id, usuario_id, comentario) VALUES (?, ?, ?)"); $stmt->execute([$_POST['lancamento_id'], $LOGGED_IN_USER_ID, $_POST['comentario']]); echo json_encode(['success' => true]); exit; }
+    if ($action === 'add_comment') {
+        // IDOR: garante que o lançamento comentado pertence à família do usuário
+        $stmtChk = $pdo->prepare("SELECT id FROM lancamentos WHERE id = ? AND familia_id = ? AND deleted_at IS NULL");
+        $stmtChk->execute([$_POST['lancamento_id'], $LOGGED_IN_FAMILY_ID]);
+        if (!$stmtChk->fetchColumn()) {
+            http_response_code(403);
+            echo json_encode(['success' => false, 'error' => 'permission_denied']); exit;
+        }
+        $stmt = $pdo->prepare("INSERT INTO lancamento_comentarios (lancamento_id, usuario_id, comentario) VALUES (?, ?, ?)");
+        $stmt->execute([$_POST['lancamento_id'], $LOGGED_IN_USER_ID, $_POST['comentario']]);
+        echo json_encode(['success' => true]); exit;
+    }
     if ($action === 'update_family_settings') { $stmt = $pdo->prepare("UPDATE familias SET moeda = ?, idioma = ? WHERE id = ?"); $stmt->execute([$_POST['moeda'], $_POST['idioma'], $LOGGED_IN_FAMILY_ID]); header('Location: index.php?page=profile&success=1'); exit; }
-    if ($action === 'add_member') { $renda = clean_money_input($_POST['renda_estimada']); $stmt = $pdo->prepare("INSERT INTO usuarios (familia_id, nome, email, senha_hash, tipo_perfil, renda_estimada, dia_recebimento_renda, ip_cadastro) VALUES (?, ?, ?, ?, 'JOVEM', ?, ?, '127.0.0.1')"); $tempPass = password_hash('mudar123', PASSWORD_DEFAULT); $stmt->execute([$LOGGED_IN_FAMILY_ID, $_POST['nome'], $_POST['email'], $tempPass, $renda, $_POST['dia_recebimento_renda']]); header('Location: index.php?page=family&success=1'); exit; }
+    if ($action === 'add_member') {
+        $renda = clean_money_input($_POST['renda_estimada']);
+        // Gera senha aleatória forte. O membro deve redefinir via "Esqueci a senha".
+        $randomPass = bin2hex(random_bytes(12));
+        $tempPass = password_hash($randomPass, PASSWORD_DEFAULT);
+        $stmt = $pdo->prepare("INSERT INTO usuarios (familia_id, nome, email, senha_hash, tipo_perfil, renda_estimada, dia_recebimento_renda, ip_cadastro) VALUES (?, ?, ?, ?, 'JOVEM', ?, ?, ?)");
+        $ip = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
+        $stmt->execute([$LOGGED_IN_FAMILY_ID, $_POST['nome'], $_POST['email'], $tempPass, $renda, $_POST['dia_recebimento_renda'], $ip]);
+        header('Location: index.php?page=family&success=1&member_added=1'); exit;
+    }
     if ($action === 'edit_member') { $renda = clean_money_input($_POST['renda_estimada']); $stmt = $pdo->prepare("UPDATE usuarios SET nome=?, renda_estimada=?, dia_recebimento_renda=?, tipo_perfil=? WHERE id=? AND familia_id=?"); $stmt->execute([$_POST['nome'], $renda, $_POST['dia_recebimento_renda'], $_POST['tipo_perfil'], $_POST['usuario_id'], $LOGGED_IN_FAMILY_ID]); header('Location: index.php?page=family&success=1'); exit; }
     if ($action === 'delete_member') { $stmt = $pdo->prepare("UPDATE usuarios SET deleted_at = NOW() WHERE id=? AND familia_id=?"); $stmt->execute([$_POST['usuario_id'], $LOGGED_IN_FAMILY_ID]); header('Location: index.php?page=family&success=1'); exit; }
     if ($action === 'add_goal' || $action === 'edit_goal') { $valor_alvo = clean_money_input($_POST['valor_alvo']); if ($action === 'add_goal') { $stmt = $pdo->prepare("INSERT INTO metas (familia_id, nome, valor_alvo, data_limite) VALUES (?, ?, ?, ?)"); $stmt->execute([$LOGGED_IN_FAMILY_ID, $_POST['nome'], $valor_alvo, $_POST['data_limite']]); } else { $stmt = $pdo->prepare("UPDATE metas SET nome=?, valor_alvo=?, data_limite=? WHERE id=? AND familia_id=?"); $stmt->execute([$_POST['nome'], $valor_alvo, $_POST['data_limite'], $_POST['meta_id'], $LOGGED_IN_FAMILY_ID]); } header('Location: index.php?page=goals&success=1'); exit; }
     if ($action === 'delete_goal') { $stmt = $pdo->prepare("UPDATE metas SET deleted_at=NOW() WHERE id=? AND familia_id=?"); $stmt->execute([$_POST['meta_id'], $LOGGED_IN_FAMILY_ID]); header('Location: index.php?page=goals&success=1'); exit; }
-    if ($action === 'add_to_goal') { $valor = clean_money_input($_POST['valor']); $pdo->beginTransaction(); $stmt = $pdo->prepare("INSERT INTO meta_aportes (meta_id, usuario_id, valor, data_aporte) VALUES (?, ?, ?, ?)"); $stmt->execute([$_POST['meta_id'], $LOGGED_IN_USER_ID, $valor, $_POST['data_aporte']]); $stmtUpd = $pdo->prepare("UPDATE metas SET valor_atual = valor_atual + ? WHERE id = ?"); $stmtUpd->execute([$valor, $_POST['meta_id']]); if(!empty($_POST['conta_origem_id'])) { $stmtL = $pdo->prepare("INSERT INTO lancamentos (familia_id, usuario_id, criador_id, descricao, valor, tipo, data_competencia, status, conta_id, tipo_recorrencia) VALUES (?, ?, ?, 'Aporte: Meta', ?, 'DESPESA', ?, 'PAGO', ?, 'UNICA')"); $stmtL->execute([$LOGGED_IN_FAMILY_ID, $LOGGED_IN_USER_ID, $LOGGED_IN_USER_ID, $valor, $_POST['data_aporte'], $_POST['conta_origem_id']]); $pdo->prepare("UPDATE contas_bancarias SET saldo_atual = saldo_atual - ? WHERE id = ?")->execute([$valor, $_POST['conta_origem_id']]); } $pdo->commit(); header('Location: index.php?page=goals&success=1'); exit; }
+    if ($action === 'add_to_goal') {
+        $valor = clean_money_input($_POST['valor']);
+        $meta_id = $_POST['meta_id'];
+
+        // IDOR: confirma que a meta é da família
+        $stmtMeta = $pdo->prepare("SELECT id FROM metas WHERE id = ? AND familia_id = ? AND deleted_at IS NULL");
+        $stmtMeta->execute([$meta_id, $LOGGED_IN_FAMILY_ID]);
+        if (!$stmtMeta->fetchColumn()) {
+            header('Location: index.php?page=goals&error=permission_denied'); exit;
+        }
+
+        // IDOR: se houver conta de origem, confirma que também é da família
+        $conta_origem_id = null;
+        if (!empty($_POST['conta_origem_id'])) {
+            $stmtConta = $pdo->prepare("SELECT id FROM contas_bancarias WHERE id = ? AND familia_id = ? AND deleted_at IS NULL");
+            $stmtConta->execute([$_POST['conta_origem_id'], $LOGGED_IN_FAMILY_ID]);
+            if (!$stmtConta->fetchColumn()) {
+                header('Location: index.php?page=goals&error=permission_denied'); exit;
+            }
+            $conta_origem_id = $_POST['conta_origem_id'];
+        }
+
+        $pdo->beginTransaction();
+        try {
+            $stmt = $pdo->prepare("INSERT INTO meta_aportes (meta_id, usuario_id, valor, data_aporte) VALUES (?, ?, ?, ?)");
+            $stmt->execute([$meta_id, $LOGGED_IN_USER_ID, $valor, $_POST['data_aporte']]);
+            $stmtUpd = $pdo->prepare("UPDATE metas SET valor_atual = valor_atual + ? WHERE id = ?");
+            $stmtUpd->execute([$valor, $meta_id]);
+            if ($conta_origem_id) {
+                $stmtL = $pdo->prepare("INSERT INTO lancamentos (familia_id, usuario_id, criador_id, descricao, valor, tipo, data_competencia, status, conta_id, tipo_recorrencia) VALUES (?, ?, ?, 'Aporte: Meta', ?, 'DESPESA', ?, 'PAGO', ?, 'UNICA')");
+                $stmtL->execute([$LOGGED_IN_FAMILY_ID, $LOGGED_IN_USER_ID, $LOGGED_IN_USER_ID, $valor, $_POST['data_aporte'], $conta_origem_id]);
+                $pdo->prepare("UPDATE contas_bancarias SET saldo_atual = saldo_atual - ? WHERE id = ?")->execute([$valor, $conta_origem_id]);
+            }
+            $pdo->commit();
+        } catch (Exception $e) {
+            $pdo->rollBack();
+            header('Location: index.php?page=goals&error=1'); exit;
+        }
+        header('Location: index.php?page=goals&success=1'); exit;
+    }
 }
 
 if(isset($_GET['action']) && $_GET['action'] === 'complete_onboarding') { header('Location: index.php?page=dashboard'); exit; }
@@ -705,7 +809,7 @@ include 'layout/header.php';
                         </div>
                     </div>
                 </div>
-                <div class="hidden sm:block"><?php if ($CURRENT_USER['email'] === 'admin@nobl.app'): ?><a href="index.php?toggle_admin=1" class="text-xs font-bold px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors shadow-lg shadow-indigo-600/20"><?php echo $IS_SUPER_ADMIN ? 'Sair do Modo God' : 'Modo Super Admin'; ?></a><?php endif; ?></div>
+                <div class="hidden sm:block"><?php if (!empty($_SESSION['is_admin_account'])): ?><a href="index.php?toggle_admin=1" class="text-xs font-bold px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors shadow-lg shadow-indigo-600/20"><?php echo $IS_SUPER_ADMIN ? 'Sair do Modo God' : 'Modo Super Admin'; ?></a><?php endif; ?></div>
             </div>
         </header>
         <?php endif; ?>

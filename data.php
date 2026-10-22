@@ -5,20 +5,23 @@ require_once 'db.php';
 $action = $_GET['action'] ?? '';
 
 // --- LÓGICA DE PRIVACIDADE GERAL ---
+// Usa placeholder (?) em vez de interpolar a variável diretamente no SQL.
+// Quem usar esta condição deve passar $privacyParam na posição correspondente.
 $privacyCondition = " AND (
-    l.usuario_id = $LOGGED_IN_USER_ID 
+    l.usuario_id = ? 
     OR u.is_restricted = 0 
     OR l.is_shared = 1
     OR l.veiculo_id IS NOT NULL 
     OR l.residencia_id IS NOT NULL
 )";
+$privacyParam = [$LOGGED_IN_USER_ID];
 
 if ($action === 'get_transaction_splits') {
     $lancamento_id = $_GET['id'] ?? 0;
     
     // Verifica permissão
     $stmtCheck = $pdo->prepare("SELECT 1 FROM lancamentos l JOIN usuarios u ON l.usuario_id = u.id WHERE l.id = ? AND l.familia_id = ? $privacyCondition");
-    $stmtCheck->execute([$lancamento_id, $LOGGED_IN_FAMILY_ID]);
+    $stmtCheck->execute(array_merge([$lancamento_id, $LOGGED_IN_FAMILY_ID], $privacyParam));
     
     if (!$stmtCheck->fetch()) {
         echo json_encode([]); 
@@ -45,7 +48,7 @@ if ($action === 'get_transaction_splits') {
 if ($action === 'get_comments') {
     $lancamento_id = $_GET['transaction_id'] ?? 0;
     $stmtCheck = $pdo->prepare("SELECT 1 FROM lancamentos l JOIN usuarios u ON l.usuario_id = u.id WHERE l.id = ? AND l.familia_id = ? $privacyCondition");
-    $stmtCheck->execute([$lancamento_id, $LOGGED_IN_FAMILY_ID]);
+    $stmtCheck->execute(array_merge([$lancamento_id, $LOGGED_IN_FAMILY_ID], $privacyParam));
     if (!$stmtCheck->fetch()) { echo json_encode([]); exit; }
     $stmt = $pdo->prepare("SELECT lc.*, u.nome as usuario_nome, u.foto_perfil FROM lancamento_comentarios lc JOIN usuarios u ON lc.usuario_id = u.id WHERE lc.lancamento_id = ? ORDER BY lc.created_at ASC");
     $stmt->execute([$lancamento_id]);
@@ -61,7 +64,7 @@ if ($action === 'get_dashboard_data') {
     
     // Filtros de Lançamentos (Respeita privacidade estrita)
     $userSql = $user_id ? " AND l.usuario_id = ? " : $privacyCondition;
-    $userParam = $user_id ? [$user_id] : [];
+    $userParam = $user_id ? [$user_id] : $privacyParam;
     
     $stmt = $pdo->prepare("SELECT SUM(valor) FROM lancamentos l JOIN usuarios u ON l.usuario_id = u.id WHERE l.familia_id = ? AND l.tipo = 'RECEITA' AND l.is_internal_transfer = 0 AND MONTH(l.data_competencia) = ? AND YEAR(l.data_competencia) = ? AND l.deleted_at IS NULL $userSql");
     $stmt->execute(array_merge([$LOGGED_IN_FAMILY_ID, $month, $year], $userParam));
@@ -84,8 +87,8 @@ if ($action === 'get_dashboard_data') {
             $accPrivacy = ""; // Guardião vê tudo no totalizador
             $accParam = [];
         } else {
-            $accPrivacy = " AND (c.usuario_id = $LOGGED_IN_USER_ID OR u.is_restricted = 0) ";
-            $accParam = [];
+            $accPrivacy = " AND (c.usuario_id = ? OR u.is_restricted = 0) ";
+            $accParam = [$LOGGED_IN_USER_ID];
         }
     }
 
@@ -135,7 +138,7 @@ if ($action === 'get_calendar_events') {
     $year = $_GET['year'] ?? date('Y');
     $user_id = $_GET['user_id'] ?? '';
     $userSql = $user_id ? " AND l.usuario_id = ? " : $privacyCondition;
-    $userParam = $user_id ? [$user_id] : [];
+    $userParam = $user_id ? [$user_id] : $privacyParam;
 
     $stmt = $pdo->prepare("
         SELECT DAY(l.data_competencia) as dia, l.descricao, l.valor, l.tipo, c.nome as cat_nome, c.grupo as cat_grupo 
@@ -184,7 +187,7 @@ if ($action === 'get_pending_settlements') {
     $output = ['i_owe' => array_map(function($i){ $i['valor_fmt'] = format_currency($i['valor']); return $i; }, $iOwe), 'to_receive' => array_map(function($i){ $i['valor_fmt'] = format_currency($i['valor']); return $i; }, $toReceive)];
     echo json_encode($output); exit;
 }
-if ($action === 'get_vaccines') { $pet_id = $_GET['pet_id'] ?? 0; $stmt = $pdo->prepare("SELECT * FROM pet_vacinacoes WHERE pet_id = ? AND deleted_at IS NULL ORDER BY data_aplicacao DESC"); $stmt->execute([$pet_id]); $vaccines = $stmt->fetchAll(); echo json_encode($vaccines); exit; }
+if ($action === 'get_vaccines') { $pet_id = $_GET['pet_id'] ?? 0; $stmtChk = $pdo->prepare("SELECT 1 FROM pets WHERE id = ? AND familia_id = ?"); $stmtChk->execute([$pet_id, $LOGGED_IN_FAMILY_ID]); if (!$stmtChk->fetchColumn()) { echo json_encode([]); exit; } $stmt = $pdo->prepare("SELECT * FROM pet_vacinacoes WHERE pet_id = ? AND deleted_at IS NULL ORDER BY data_aplicacao DESC"); $stmt->execute([$pet_id]); $vaccines = $stmt->fetchAll(); echo json_encode($vaccines); exit; }
 if ($action === 'get_asset_history') { $type = $_GET['type'] ?? ''; $id = $_GET['id'] ?? 0; $column = ($type === 'vehicle') ? 'veiculo_id' : 'residencia_id'; $stmt = $pdo->prepare("SELECT l.*, c.nome as categoria_nome, u.nome as usuario_nome FROM lancamentos l LEFT JOIN categorias c ON l.categoria_id = c.id LEFT JOIN usuarios u ON l.usuario_id = u.id WHERE l.$column = ? AND l.familia_id = ? AND l.deleted_at IS NULL ORDER BY l.data_competencia DESC LIMIT 500"); $stmt->execute([$id, $LOGGED_IN_FAMILY_ID]); $history = $stmt->fetchAll(); foreach ($history as &$h) { $h['valor_fmt'] = format_currency($h['valor'], $CURRENT_USER['moeda']); $h['data_fmt'] = date('d/m/Y', strtotime($h['data_competencia'])); } echo json_encode($history); exit; }
-if ($action === 'get_goal_history') { $meta_id = $_GET['meta_id'] ?? 0; $stmt = $pdo->prepare("SELECT ma.*, u.nome as usuario_nome, u.foto_perfil FROM meta_aportes ma JOIN usuarios u ON ma.usuario_id = u.id WHERE ma.meta_id = ? ORDER BY ma.data_aporte DESC"); $stmt->execute([$meta_id]); $aportes = $stmt->fetchAll(); foreach ($aportes as &$a) { $a['valor_fmt'] = format_currency($a['valor'], $CURRENT_USER['moeda']); $a['data_fmt'] = date('d/m/Y', strtotime($a['data_aporte'])); } echo json_encode($aportes); exit; }
+if ($action === 'get_goal_history') { $meta_id = $_GET['meta_id'] ?? 0; $stmtChk = $pdo->prepare("SELECT 1 FROM metas WHERE id = ? AND familia_id = ?"); $stmtChk->execute([$meta_id, $LOGGED_IN_FAMILY_ID]); if (!$stmtChk->fetchColumn()) { echo json_encode([]); exit; } $stmt = $pdo->prepare("SELECT ma.*, u.nome as usuario_nome, u.foto_perfil FROM meta_aportes ma JOIN usuarios u ON ma.usuario_id = u.id WHERE ma.meta_id = ? ORDER BY ma.data_aporte DESC"); $stmt->execute([$meta_id]); $aportes = $stmt->fetchAll(); foreach ($aportes as &$a) { $a['valor_fmt'] = format_currency($a['valor'], $CURRENT_USER['moeda']); $a['data_fmt'] = date('d/m/Y', strtotime($a['data_aporte'])); } echo json_encode($aportes); exit; }
 ?>

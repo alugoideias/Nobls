@@ -65,3 +65,53 @@ if (!function_exists('_t')) {
         return $translations[$lang][$key] ?? str_replace('_', ' ', ucfirst($key));
     }
 }
+
+if (!function_exists('csrf_token')) {
+    /**
+     * Retorna o token CSRF da sessão, gerando um novo se ainda não existir.
+     * @return string Token CSRF em hexadecimal.
+     */
+    function csrf_token() {
+        if (empty($_SESSION['csrf_token'])) {
+            $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
+        }
+        return $_SESSION['csrf_token'];
+    }
+}
+
+if (!function_exists('csrf_field')) {
+    /**
+     * Renderiza um input hidden com o token CSRF para uso em formulários.
+     * @return string HTML do campo oculto.
+     */
+    function csrf_field() {
+        return '<input type="hidden" name="csrf_token" value="' . htmlspecialchars(csrf_token(), ENT_QUOTES) . '">';
+    }
+}
+
+if (!function_exists('verify_csrf')) {
+    /**
+     * Valida o token CSRF enviado no POST contra o da sessão.
+     * Em caso de falha, encerra a requisição com HTTP 403.
+     */
+    function verify_csrf() {
+        // Aceita o token tanto via campo de formulário quanto via header HTTP (AJAX).
+        $sent = $_POST['csrf_token'] ?? ($_SERVER['HTTP_X_CSRF_TOKEN'] ?? '');
+        $session = $_SESSION['csrf_token'] ?? '';
+        if (empty($sent) || empty($session) || !hash_equals($session, $sent)) {
+            http_response_code(403);
+            die('Falha na validação de segurança (CSRF). Recarregue a página e tente novamente.');
+        }
+    }
+}
+
+if (!function_exists('is_super_admin')) {
+    /**
+     * Verificação centralizada de super administrador.
+     * Baseia-se na flag persistida na sessão, definida no login.
+     * @return bool
+     */
+    function is_super_admin() {
+        return !empty($_SESSION['is_super_admin']);
+    }
+}

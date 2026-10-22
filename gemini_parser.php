@@ -39,7 +39,26 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST' || !isset($_FILES['documento'])) {
 }
 
 $file = $_FILES['documento'];
-$fileMimeType = $file['type'];
+
+if ($file['error'] !== UPLOAD_ERR_OK) {
+    echo json_encode(['error' => 'Falha no upload do arquivo.']);
+    exit;
+}
+
+// Valida o tipo REAL do arquivo (não confia no mime enviado pelo cliente) e o tamanho.
+$allowedMimes = ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'application/pdf'];
+$fileMimeType = mime_content_type($file['tmp_name']);
+$maxSize = 10 * 1024 * 1024; // 10 MB
+
+if (!in_array($fileMimeType, $allowedMimes, true)) {
+    echo json_encode(['error' => 'Formato inválido. Envie uma imagem (JPG/PNG/WEBP) ou PDF.']);
+    exit;
+}
+if ($file['size'] > $maxSize) {
+    echo json_encode(['error' => 'Arquivo muito grande (máximo 10 MB).']);
+    exit;
+}
+
 $fileData = base64_encode(file_get_contents($file['tmp_name']));
 
 // 3. Monta o Prompt Avançado
@@ -85,7 +104,10 @@ $ch = curl_init($url);
 curl_setopt($ch, CURLOPT_HTTPHEADER, array('Content-Type: application/json'));
 curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($requestPayload));
 curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
+curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
+curl_setopt($ch, CURLOPT_TIMEOUT, 120);
+curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
 $response = curl_exec($ch);
 $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
 curl_close($ch);

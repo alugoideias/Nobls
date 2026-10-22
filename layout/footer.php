@@ -39,5 +39,66 @@
     <button @click="show = false" class="ml-auto text-white/50 hover:text-white"><i class="fa-solid fa-xmark"></i></button>
 </div>
 
+<script>
+// --- PROTEÇÃO CSRF GLOBAL ---
+// Injeta automaticamente o token em todos os formulários POST e requisições AJAX,
+// evitando ter que editar cada formulário individualmente.
+(function () {
+    var meta = document.querySelector('meta[name="csrf-token"]');
+    var token = meta ? meta.getAttribute('content') : '';
+    if (!token) return;
+
+    // 1. Garante o campo hidden em todo submit de formulário POST
+    document.addEventListener('submit', function (e) {
+        var form = e.target;
+        if (!form || form.tagName !== 'FORM') return;
+        if ((form.method || '').toLowerCase() !== 'post') return;
+        if (!form.querySelector('input[name="csrf_token"]')) {
+            var input = document.createElement('input');
+            input.type = 'hidden';
+            input.name = 'csrf_token';
+            input.value = token;
+            form.appendChild(input);
+        }
+    }, true);
+
+    // 2. Intercepta fetch() para anexar o token em requisições que modificam estado
+    var originalFetch = window.fetch;
+    if (originalFetch) {
+        window.fetch = function (resource, init) {
+            init = init || {};
+            var method = (init.method || (typeof resource === 'object' && resource.method) || 'GET').toUpperCase();
+            if (method !== 'GET' && method !== 'HEAD') {
+                init.headers = init.headers || {};
+                if (init.headers instanceof Headers) {
+                    if (!init.headers.has('X-CSRF-Token')) init.headers.set('X-CSRF-Token', token);
+                } else {
+                    if (!init.headers['X-CSRF-Token']) init.headers['X-CSRF-Token'] = token;
+                }
+                // Se o corpo for FormData, inclui o token como campo também
+                if (init.body instanceof FormData && !init.body.has('csrf_token')) {
+                    init.body.append('csrf_token', token);
+                }
+            }
+            return originalFetch.call(this, resource, init);
+        };
+    }
+
+    // 3. Intercepta XMLHttpRequest
+    var origOpen = XMLHttpRequest.prototype.open;
+    var origSend = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.open = function (method) {
+        this._csrfMethod = (method || 'GET').toUpperCase();
+        return origOpen.apply(this, arguments);
+    };
+    XMLHttpRequest.prototype.send = function (body) {
+        if (this._csrfMethod && this._csrfMethod !== 'GET' && this._csrfMethod !== 'HEAD') {
+            try { this.setRequestHeader('X-CSRF-Token', token); } catch (err) {}
+        }
+        return origSend.apply(this, arguments);
+    };
+})();
+</script>
+
 </body>
 </html>

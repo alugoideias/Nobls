@@ -4,6 +4,7 @@ session_start();
 require_once 'db_auth.php'; // Conexão para registro
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'register') {
+    verify_csrf();
     $nome_familia = $_POST['nome_familia'];
     $nome_guardiao = $_POST['nome_guardiao'];
     $email_guardiao = $_POST['email_guardiao'];
@@ -97,6 +98,7 @@ include 'layout/header.php';
     <div class="max-w-xl w-full">
         <form method="POST" action="register.php" class="bg-white rounded-3xl p-8 md:p-12 shadow-2xl relative overflow-hidden flex flex-col">
             <input type="hidden" name="action" value="register">
+            <?php echo csrf_field(); ?>
             
             <div class="space-y-6">
                 <div class="w-16 h-16 bg-indigo-600 rounded-2xl flex items-center justify-center text-white text-3xl mb-8"><i class="fa-solid fa-crown"></i></div>
