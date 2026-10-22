@@ -166,7 +166,18 @@ document.addEventListener('alpine:init', () => {
         <div x-show="tab === 'financial'" class="grid grid-cols-1 lg:grid-cols-2 gap-8">
             <!-- Contas -->
             <div>
-                <div class="flex justify-between items-center mb-4"><h3 class="font-bold text-slate-800">Contas Bancárias</h3><button @click="openModal('account')" class="text-indigo-600 text-xs font-bold hover:underline">+ ADICIONAR</button></div>
+                <div class="flex justify-between items-center mb-4">
+                    <h3 class="font-bold text-slate-800">Contas Bancárias</h3>
+                    <div class="flex items-center gap-3">
+                        <?php if ($CURRENT_USER['tipo_perfil'] === 'GUARDIÃO' || $IS_SUPER_ADMIN): ?>
+                        <form action="index.php" method="POST" class="inline" onsubmit="return confirm('Recalcular o saldo de todas as contas a partir dos lançamentos pagos? Use isto se algum saldo parecer incorreto.');">
+                            <input type="hidden" name="action" value="reconcile_balances">
+                            <button type="submit" class="text-slate-500 text-xs font-bold hover:text-indigo-600 hover:underline" title="Recalcula os saldos a partir dos lançamentos pagos"><i class="fa-solid fa-scale-balanced mr-1"></i>RECONCILIAR</button>
+                        </form>
+                        <?php endif; ?>
+                        <button @click="openModal('account')" class="text-indigo-600 text-xs font-bold hover:underline">+ ADICIONAR</button>
+                    </div>
+                </div>
                 <div class="space-y-3">
                     <?php if (empty($accounts)): ?>
                         <p class="text-slate-400 text-sm italic">Nenhuma conta visível.</p>

@@ -115,3 +115,31 @@ if (!function_exists('is_super_admin')) {
         return !empty($_SESSION['is_super_admin']);
     }
 }
+
+if (!function_exists('reconcile_account_balances')) {
+    /**
+     * Recalcula o saldo_atual de todas as contas de uma família a partir do
+     * saldo_inicial somado aos lançamentos PAGOS (receitas somam, despesas subtraem).
+     * Serve como rede de segurança contra divergências do saldo materializado.
+     *
+     * @param PDO $pdo        Conexão ativa.
+     * @param int $familiaId  Família cujas contas serão reconciliadas.
+     * @return int            Número de contas reconciliadas.
+     */
+    function reconcile_account_balances(PDO $pdo, $familiaId) {
+        $stmt = $pdo->prepare("
+            UPDATE contas_bancarias c
+            LEFT JOIN (
+                SELECT conta_id,
+                       SUM(CASE WHEN tipo = 'RECEITA' THEN valor ELSE -valor END) AS mov
+                FROM lancamentos
+                WHERE status = 'PAGO' AND conta_id IS NOT NULL AND deleted_at IS NULL
+                GROUP BY conta_id
+            ) m ON m.conta_id = c.id
+            SET c.saldo_atual = c.saldo_inicial + COALESCE(m.mov, 0)
+            WHERE c.familia_id = ? AND c.deleted_at IS NULL
+        ");
+        $stmt->execute([$familiaId]);
+        return $stmt->rowCount();
+    }
+}

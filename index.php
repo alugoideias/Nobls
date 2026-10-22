@@ -13,11 +13,39 @@ if (isset($_GET['toggle_admin'])) {
 
 // --- HELPER PARA LIMPEZA DE MOEDA (BRL -> FLOAT) ---
 function clean_money_input($val) {
-    if (empty($val)) return 0.00;
-    if (strpos($val, ',') !== false) {
+    if ($val === null || $val === '') return 0.00;
+
+    // Se já vier numérico (ex.: valores da IA na importação), retorna direto.
+    if (is_int($val) || is_float($val)) return (float)$val;
+
+    $val = trim((string)$val);
+    if ($val === '') return 0.00;
+
+    $hasComma = strpos($val, ',') !== false;
+    $hasDot   = strpos($val, '.') !== false;
+
+    if ($hasComma) {
+        // Formato brasileiro: vírgula é decimal, ponto é separador de milhar.
+        // Ex.: "1.234,56" -> 1234.56
         $val = str_replace('.', '', $val);
         $val = str_replace(',', '.', $val);
+    } elseif ($hasDot) {
+        // Só ponto, sem vírgula. Precisa decidir se o ponto é milhar ou decimal.
+        // Heurística: se o último grupo após um ponto tem exatamente 3 dígitos
+        // (e há mais de um grupo ou o número começa com grupo de milhar),
+        // tratamos como separador de milhar. Caso contrário, é decimal.
+        $parts = explode('.', $val);
+        $last = end($parts);
+        if (count($parts) > 1 && strlen($last) === 3 && ctype_digit($last)) {
+            // Ex.: "1.000", "12.000", "1.234.000" -> milhar
+            $val = str_replace('.', '', $val);
+        }
+        // Senão, mantém o ponto como decimal. Ex.: "15.90", "1500.5" -> inalterado
     }
+
+    // Remove qualquer caractere remanescente que não seja dígito, ponto ou sinal.
+    $val = preg_replace('/[^0-9.\-]/', '', $val);
+
     return (float)$val;
 }
 
@@ -45,6 +73,25 @@ if (isset($LOGGED_IN_FAMILY_ID) && $LOGGED_IN_FAMILY_ID > 0) {
     // Migração: Metadados para Lançamentos (Para Km/Litros de combustível)
     try {
         $pdo->exec("ALTER TABLE lancamentos ADD COLUMN meta_dados JSON DEFAULT NULL");
+    } catch (PDOException $e) {}
+
+    // Migração: saldo_inicial em contas (base para reconciliação de saldo).
+    // Para contas legadas, inicializa de forma que a reconciliação reproduza
+    // o saldo_atual vigente: saldo_inicial = saldo_atual - (receitas - despesas) pagas.
+    try {
+        $pdo->exec("ALTER TABLE contas_bancarias ADD COLUMN saldo_inicial DECIMAL(10,2) NOT NULL DEFAULT 0.00 AFTER tipo");
+        // Só roda o backfill quando a coluna acabou de ser criada (evita refazer a cada request).
+        $pdo->exec("
+            UPDATE contas_bancarias c
+            LEFT JOIN (
+                SELECT conta_id,
+                       SUM(CASE WHEN tipo = 'RECEITA' THEN valor ELSE -valor END) AS mov
+                FROM lancamentos
+                WHERE status = 'PAGO' AND conta_id IS NOT NULL AND deleted_at IS NULL
+                GROUP BY conta_id
+            ) m ON m.conta_id = c.id
+            SET c.saldo_inicial = c.saldo_atual - COALESCE(m.mov, 0)
+        ");
     } catch (PDOException $e) {}
 
     // NOVA TABELA DE RATEIO
@@ -243,11 +290,37 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     if ($action === 'pay_settlement') {
-        // ... (código existente mantido)
         $settlement_id = $_POST['settlement_id'];
-        $conta_origem_id = $_POST['conta_id'];
-        
+        $conta_origem_id = $_POST['conta_id'] ?: null;
+
         if ($settlement_id) {
+            // --- VALIDAÇÕES PRÉVIAS (antes de mexer em qualquer saldo) ---
+            // 1. Conta de origem é obrigatória e precisa ser da família.
+            if (!$conta_origem_id) {
+                header('Location: index.php?page=dashboard&error=1&msg=' . urlencode('Selecione a conta de onde o valor vai sair.')); exit;
+            }
+            $stmtChkConta = $pdo->prepare("SELECT 1 FROM contas_bancarias WHERE id = ? AND familia_id = ? AND deleted_at IS NULL");
+            $stmtChkConta->execute([$conta_origem_id, $LOGGED_IN_FAMILY_ID]);
+            if (!$stmtChkConta->fetchColumn()) {
+                header('Location: index.php?page=dashboard&error=permission_denied'); exit;
+            }
+
+            // 2. O credor precisa ter conta de recebimento definida, senão o crédito
+            //    não seria aplicado e o saldo divergiria. Bloqueia antes de debitar.
+            $stmtRec = $pdo->prepare("SELECT id, usuario_id, valor FROM lancamentos WHERE settlement_id = ? AND tipo = 'RECEITA' AND familia_id = ? LIMIT 1");
+            $stmtRec->execute([$settlement_id, $LOGGED_IN_FAMILY_ID]);
+            $recTx = $stmtRec->fetch();
+
+            $defAcc = null;
+            if ($recTx) {
+                $stmtUser = $pdo->prepare("SELECT conta_recebimento_id FROM usuarios WHERE id = ?");
+                $stmtUser->execute([$recTx['usuario_id']]);
+                $defAcc = $stmtUser->fetchColumn();
+                if (!$defAcc) {
+                    header('Location: index.php?page=dashboard&error=no_credor_account&msg=' . urlencode('O credor precisa definir uma conta de recebimento no perfil antes de receber o acerto.')); exit;
+                }
+            }
+
             $pdo->beginTransaction();
             try {
                 $stmtVal = $pdo->prepare("SELECT valor FROM lancamentos WHERE settlement_id = ? AND tipo = 'DESPESA' AND familia_id = ? LIMIT 1");
@@ -256,22 +329,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 $stmtUpd1 = $pdo->prepare("UPDATE lancamentos SET status = 'PAGO', conta_id = ? WHERE settlement_id = ? AND tipo = 'DESPESA' AND familia_id = ?");
                 $stmtUpd1->execute([$conta_origem_id, $settlement_id, $LOGGED_IN_FAMILY_ID]);
-                
-                $stmtRec = $pdo->prepare("SELECT id, usuario_id, valor FROM lancamentos WHERE settlement_id = ? AND tipo = 'RECEITA' AND familia_id = ? LIMIT 1");
-                $stmtRec->execute([$settlement_id, $LOGGED_IN_FAMILY_ID]);
-                $recTx = $stmtRec->fetch();
 
-                if ($recTx) {
-                    $stmtUser = $pdo->prepare("SELECT conta_recebimento_id FROM usuarios WHERE id = ?");
-                    $stmtUser->execute([$recTx['usuario_id']]);
-                    $defAcc = $stmtUser->fetchColumn();
-
-                    if ($defAcc) {
-                        $pdo->prepare("UPDATE lancamentos SET status = 'PAGO', conta_id = ? WHERE id = ?")->execute([$defAcc, $recTx['id']]);
-                        $pdo->prepare("UPDATE contas_bancarias SET saldo_atual = saldo_atual + ? WHERE id = ?")->execute([$recTx['valor'], $defAcc]);
-                    } else {
-                        $pdo->prepare("UPDATE lancamentos SET status = 'PAGO' WHERE id = ?")->execute([$recTx['id']]);
-                    }
+                if ($recTx && $defAcc) {
+                    $pdo->prepare("UPDATE lancamentos SET status = 'PAGO', conta_id = ? WHERE id = ?")->execute([$defAcc, $recTx['id']]);
+                    $pdo->prepare("UPDATE contas_bancarias SET saldo_atual = saldo_atual + ? WHERE id = ?")->execute([$recTx['valor'], $defAcc]);
                 }
 
                 if ($val > 0 && $conta_origem_id) {
@@ -287,11 +348,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     if ($action === 'confirm_import') {
-        // ... (código existente mantido)
         if (!isset($_POST['items']) || !is_array($_POST['items'])) { header('Location: index.php?page=import&error=no_items'); exit; }
-        $conta_id = $_POST['conta_id'] ?: null; $cartao_id = $_POST['cartao_id'] ?: null; $count = 0;
+
+        // TRAVA DE REPROCESSAMENTO: só confirma se houver staging ativo na sessão.
+        // Um refresh / voltar no navegador reenviaria o POST, mas o staging já foi
+        // consumido (unset ao final), então a segunda confirmação é barrada aqui.
+        if (!isset($_SESSION['import_staging'])) {
+            header('Location: index.php?page=transactions&error=already_imported&msg=' . urlencode('Esta importação já foi processada.')); exit;
+        }
+
+        $conta_id = $_POST['conta_id'] ?: null; $cartao_id = $_POST['cartao_id'] ?: null; $count = 0; $skipped = 0;
         $pdo->beginTransaction();
         try {
+            // Checagem de duplicata no servidor (não confia só no preview visual).
+            $stmtDup = $pdo->prepare("SELECT id FROM lancamentos WHERE familia_id = ? AND data_competencia = ? AND valor = ? AND descricao LIKE ? AND deleted_at IS NULL LIMIT 1");
             $stmtInsert = $pdo->prepare("INSERT INTO lancamentos (familia_id, usuario_id, criador_id, descricao, valor, tipo, data_competencia, status, categoria_id, conta_id, cartao_id, tipo_recorrencia, parcela_atual, parcela_total, recorrencia_grupo_id, origem_lancamento) VALUES (?, ?, ?, ?, ?, ?, ?, 'PAGO', ?, ?, ?, ?, ?, ?, ?, 'IMPORTACAO')");
             foreach ($_POST['items'] as $index => $item) {
                 if (isset($item['ignore']) && $item['ignore'] == '1') continue;
@@ -300,6 +370,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $data = $item['data']; $tipo = $item['tipo']; $catId = !empty($item['categoria_id']) ? $item['categoria_id'] : null;
                 $parcela_atual = !empty($item['parcela_atual']) ? $item['parcela_atual'] : null; $parcela_total = !empty($item['parcela_total']) ? $item['parcela_total'] : null;
                 $tipo_recorrencia = ($parcela_total > 1) ? 'PARCELADO' : 'UNICA'; $recorrencia_grupo_id = ($parcela_total > 1) ? uniqid() : null;
+
+                // Pula se um lançamento equivalente já existe (evita débito duplicado no saldo).
+                $descPart = substr($descricao, 0, 10);
+                $stmtDup->execute([$LOGGED_IN_FAMILY_ID, $data, $valor, "%$descPart%"]);
+                if ($stmtDup->fetch()) { $skipped++; continue; }
+
                 $stmtInsert->execute([$LOGGED_IN_FAMILY_ID, $LOGGED_IN_USER_ID, $LOGGED_IN_USER_ID, $descricao, $valor, $tipo, $data, $catId, $conta_id, $cartao_id, $tipo_recorrencia, $parcela_atual, $parcela_total, $recorrencia_grupo_id]);
                 $count++;
                 
@@ -316,7 +392,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                 }
             }
-            $pdo->commit(); unset($_SESSION['import_staging']); header("Location: index.php?page=transactions&success=1&msg=$count lançamentos importados."); exit;
+            $pdo->commit();
+            unset($_SESSION['import_staging']); // consome o staging: impede reprocessamento
+            $msg = "$count lançamentos importados.";
+            if ($skipped > 0) { $msg .= " $skipped ignorados por já existirem."; }
+            header("Location: index.php?page=transactions&success=1&msg=" . urlencode($msg)); exit;
         } catch (Exception $e) { $pdo->rollBack(); header('Location: index.php?page=import&error=db_error'); exit; }
     }
 
@@ -589,11 +669,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($action === 'add_account' || $action === 'edit_account') { 
         $saldo = clean_money_input($_POST['saldo_atual']);
         if ($action === 'add_account') {
-            $stmt = $pdo->prepare("INSERT INTO contas_bancarias (familia_id, usuario_id, nome_banco, tipo, saldo_atual) VALUES (?, ?, ?, ?, ?)"); 
-            $stmt->execute([$LOGGED_IN_FAMILY_ID, $LOGGED_IN_USER_ID, $_POST['nome_banco'], $_POST['tipo'], $saldo]);
+            // Conta nova: saldo informado é tanto o inicial quanto o atual.
+            $stmt = $pdo->prepare("INSERT INTO contas_bancarias (familia_id, usuario_id, nome_banco, tipo, saldo_inicial, saldo_atual) VALUES (?, ?, ?, ?, ?, ?)"); 
+            $stmt->execute([$LOGGED_IN_FAMILY_ID, $LOGGED_IN_USER_ID, $_POST['nome_banco'], $_POST['tipo'], $saldo, $saldo]);
         } else {
-            $stmt = $pdo->prepare("UPDATE contas_bancarias SET nome_banco=?, tipo=?, saldo_atual=? WHERE id=? AND familia_id=?");
-            $stmt->execute([$_POST['nome_banco'], $_POST['tipo'], $saldo, $_POST['id'], $LOGGED_IN_FAMILY_ID]);
+            // Reajuste manual: o usuário informa o saldo atual correto. Recalcula o
+            // saldo_inicial para que a reconciliação reproduza esse saldo (saldo_inicial
+            // = saldo_informado - movimentos pagos da conta), mantendo a base íntegra.
+            $accId = $_POST['id'];
+            $stmtMov = $pdo->prepare("SELECT COALESCE(SUM(CASE WHEN tipo='RECEITA' THEN valor ELSE -valor END),0) FROM lancamentos WHERE conta_id = ? AND status='PAGO' AND deleted_at IS NULL");
+            $stmtMov->execute([$accId]);
+            $mov = (float)$stmtMov->fetchColumn();
+            $novoInicial = $saldo - $mov;
+            $stmt = $pdo->prepare("UPDATE contas_bancarias SET nome_banco=?, tipo=?, saldo_inicial=?, saldo_atual=? WHERE id=? AND familia_id=?");
+            $stmt->execute([$_POST['nome_banco'], $_POST['tipo'], $novoInicial, $saldo, $accId, $LOGGED_IN_FAMILY_ID]);
         }
         header('Location: index.php?page=assets&success=1'); exit; 
     }
@@ -724,6 +813,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         echo json_encode(['success' => true]); exit;
     }
     if ($action === 'update_family_settings') { $stmt = $pdo->prepare("UPDATE familias SET moeda = ?, idioma = ? WHERE id = ?"); $stmt->execute([$_POST['moeda'], $_POST['idioma'], $LOGGED_IN_FAMILY_ID]); header('Location: index.php?page=profile&success=1'); exit; }
+    if ($action === 'reconcile_balances') {
+        // Rede de segurança: recalcula o saldo das contas a partir dos lançamentos pagos.
+        // Restrito a Guardião ou super admin (operação sensível sobre saldos).
+        if ($CURRENT_USER['tipo_perfil'] !== 'GUARDIÃO' && !$IS_SUPER_ADMIN) {
+            header('Location: index.php?page=assets&error=permission_denied'); exit;
+        }
+        $n = reconcile_account_balances($pdo, $LOGGED_IN_FAMILY_ID);
+        header('Location: index.php?page=assets&success=1&msg=' . urlencode("Saldos reconciliados ($n contas)." )); exit;
+    }
     if ($action === 'add_member') {
         $renda = clean_money_input($_POST['renda_estimada']);
         // Gera senha aleatória forte. O membro deve redefinir via "Esqueci a senha".
